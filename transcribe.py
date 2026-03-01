@@ -85,6 +85,35 @@ else:
     if os.path.exists(out_mp4) and has_embedded_subtitles(out_mp4):
         print(f"Skipping (already done): {out_mp4}")
         sys.exit(0)
+    # if .srt already exists and has content, the transcription is complete but
+    # the mux step never finished — skip straight to muxing without re-transcribing
+    if os.path.exists(srt_file) and os.path.getsize(srt_file) > 0:
+        print(f"Transcript already complete, re-muxing subtitles into MP4...")
+        open(progress_file, "w").close()
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", audio_file,
+                    "-i", srt_file,
+                    "-c", "copy",
+                    "-c:s", "mov_text",
+                    "-metadata:s:s:0", "language=eng",
+                    tmp_mp4,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                print(f"ERROR: ffmpeg failed:\n{result.stderr}", file=sys.stderr)
+                sys.exit(1)
+            os.replace(tmp_mp4, out_mp4)
+        finally:
+            if os.path.exists(tmp_mp4):
+                os.unlink(tmp_mp4)
+        os.unlink(progress_file)
+        print(f"Saved: {out_mp4}")
+        sys.exit(0)
 
 # mark this run as in-progress
 open(progress_file, "w").close()
@@ -180,6 +209,9 @@ if total_written == 0:
     sys.exit(0)
 
 # mux completed SRT into the MP4 container
+# If the source and output are the same path (e.g. re-processing an already-extracted MP4),
+# write to tmp_mp4 first then atomically replace — os.replace handles this correctly
+# since it's on the same filesystem, but we must not unlink tmp_mp4 if it IS out_mp4.
 try:
     result = subprocess.run(
         [

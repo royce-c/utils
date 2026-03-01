@@ -19,10 +19,18 @@ find "$ROOT" -type f -name "*.mp4.zip" | while IFS= read -r zipfile; do
     echo "Unzipping: $zipfile -> $out_dir"
     unzip -n "$zipfile" -d "$out_dir" || { echo "WARNING: failed to unzip $zipfile"; continue; }
 
-    # find the extracted MP4 (there should be exactly one)
-    mp4=$(find "$out_dir" -maxdepth 1 -type f -name "*.mp4" | head -n 1)
+    # find the extracted MP4 — look for any .mp4 in the output dir that is NOT
+    # already the finished output (i.e. does not already have embedded subtitles)
+    mp4=""
+    while IFS= read -r candidate; do
+        if ! ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$candidate" 2>/dev/null | grep -q .; then
+            mp4="$candidate"
+            break
+        fi
+    done < <(find "$out_dir" -maxdepth 1 -type f -name "*.mp4")
+
     if [ -z "$mp4" ]; then
-        echo "WARNING: no .mp4 found in $out_dir after unzipping $zipfile"
+        echo "WARNING: no unprocessed .mp4 found in $out_dir"
         continue
     fi
 
