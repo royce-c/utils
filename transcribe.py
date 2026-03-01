@@ -1,6 +1,8 @@
 from faster_whisper import WhisperModel
 import sys
 import os
+import subprocess
+import tempfile
 
 if len(sys.argv) < 2:
     print(f"Usage: python {sys.argv[0]} <audio_file>")
@@ -10,6 +12,19 @@ audio_file = sys.argv[1]
 if not os.path.exists(audio_file):
     print(f"Error: file not found: {audio_file}")
     sys.exit(1)
+
+# check if subtitles are already embedded in the container
+def has_embedded_subtitles(path):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "s",
+         "-show_entries", "stream=index", "-of", "csv=p=0", path],
+        capture_output=True, text=True,
+    )
+    return bool(result.stdout.strip())
+
+if has_embedded_subtitles(audio_file):
+    print(f"Skipping (subtitles already embedded): {audio_file}")
+    sys.exit(0)
 
 model = WhisperModel(
     "large-v3",
@@ -60,8 +75,30 @@ def fmt_time(t):
     return f"{int(h):02}:{int(m):02}:{int(s):02},{ms:03}"
 
 
-with open(base + ".srt", "w") as f:
+# write a temporary SRT, mux it into the MP4, then clean up
+with tempfile.NamedTemporaryFile(mode="w", suffix=".srt", delete=False) as tmp:
+    tmp_srt = tmp.name
     for i, s in enumerate(all_segments, 1):
-        f.write(f"{i}\n{fmt_time(s.start)} --> {fmt_time(s.end)}\n{s.text.strip()}\n\n")
+        tmp.write(f"{i}\n{fmt_time(s.start)} --> {fmt_time(s.end)}\n{s.text.strip()}\n\n")
 
-print(f"Saved: {base}.txt and {base}.srt")
+tmp_mp4 = base + ".subtitled.mp4"
+try:
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", audio_file,
+            "-i", tmp_srt,
+            "-c", "copy",
+            "-c:s", "mov_text",
+            "-metadata:s:s:0", "language=eng",
+            tmp_mp4,
+        ],
+        check=True,
+    )
+    os.replace(tmp_mp4, audio_file)
+finally:
+    os.unlink(tmp_srt)
+    if os.path.exists(tmp_mp4):
+        os.unlink(tmp_mp4)
+
+print(f"Saved: {base}.txt and subtitles embedded in {audio_file}")

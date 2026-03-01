@@ -10,11 +10,10 @@ find "$ROOT" -type f -name "*.mp4.zip" | while IFS= read -r zipfile; do
     unzip -n "$zipfile" -d "$dir"
 done
 
-# transcribe all .mp4 files, skip ones already done
+# transcribe all .mp4 files, skip ones that already have embedded subtitles
 find "$ROOT" -type f -name "*.mp4" | while IFS= read -r mp4; do
-    base="${mp4%.mp4}"
-    if [ -f "${base}.srt" ] || [ -f "${base}.txt" ]; then
-        echo "Skipping (already done): $mp4"
+    if ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$mp4" 2>/dev/null | grep -q .; then
+        echo "Skipping (subtitles already embedded): $mp4"
         continue
     fi
     echo "Transcribing: $mp4"
