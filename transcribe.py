@@ -2,7 +2,6 @@ from faster_whisper import WhisperModel
 import sys
 import os
 import subprocess
-import tempfile
 
 if len(sys.argv) < 2:
     print(f"Usage: python {sys.argv[0]} <audio_file>")
@@ -13,7 +12,17 @@ if not os.path.exists(audio_file):
     print(f"Error: file not found: {audio_file}")
     sys.exit(1)
 
-# check if subtitles are already embedded in the container
+# optional second argument: directory to write outputs into
+if len(sys.argv) >= 3:
+    out_dir = sys.argv[2]
+    os.makedirs(out_dir, exist_ok=True)
+else:
+    out_dir = os.path.dirname(os.path.abspath(audio_file))
+
+stem = os.path.splitext(os.path.basename(audio_file))[0]
+base = os.path.join(out_dir, stem)
+
+# check if the output MP4 already exists with subtitles embedded
 def has_embedded_subtitles(path):
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "s",
@@ -22,8 +31,8 @@ def has_embedded_subtitles(path):
     )
     return bool(result.stdout.strip())
 
-if has_embedded_subtitles(audio_file):
-    print(f"Skipping (subtitles already embedded): {audio_file}")
+if os.path.exists(base + ".mp4") and has_embedded_subtitles(base + ".mp4"):
+    print(f"Skipping (output already exists with subtitles): {base}.mp4")
     sys.exit(0)
 
 model = WhisperModel(
@@ -61,11 +70,16 @@ for segment in segments:
     print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
     all_segments.append(segment)
 
-base = os.path.splitext(os.path.abspath(audio_file))[0]
+if not all_segments:
+    print("WARNING: no speech detected, skipping output.")
+    sys.exit(0)
 
-with open(base + ".txt", "w") as f:
-    for s in all_segments:
-        f.write(s.text.strip() + "\n")
+if os.path.exists(base + ".txt"):
+    print(f"Skipping (already exists): {base}.txt")
+else:
+    with open(base + ".txt", "w") as f:
+        for s in all_segments:
+            f.write(s.text.strip() + "\n")
 
 
 def fmt_time(t):
@@ -75,30 +89,38 @@ def fmt_time(t):
     return f"{int(h):02}:{int(m):02}:{int(s):02},{ms:03}"
 
 
-# write a temporary SRT, mux it into the MP4, then clean up
-with tempfile.NamedTemporaryFile(mode="w", suffix=".srt", delete=False) as tmp:
-    tmp_srt = tmp.name
-    for i, s in enumerate(all_segments, 1):
-        tmp.write(f"{i}\n{fmt_time(s.start)} --> {fmt_time(s.end)}\n{s.text.strip()}\n\n")
+# write SRT file
+srt_file = base + ".srt"
+if os.path.exists(srt_file):
+    print(f"Skipping (already exists): {srt_file}")
+else:
+    with open(srt_file, "w") as f:
+        for i, s in enumerate(all_segments, 1):
+            f.write(f"{i}\n{fmt_time(s.start)} --> {fmt_time(s.end)}\n{s.text.strip()}\n\n")
 
+# mux SRT into the MP4 container, writing directly to the output dir
+out_mp4 = base + ".mp4"
 tmp_mp4 = base + ".subtitled.mp4"
 try:
-    subprocess.run(
+    result = subprocess.run(
         [
             "ffmpeg", "-y",
             "-i", audio_file,
-            "-i", tmp_srt,
+            "-i", srt_file,
             "-c", "copy",
             "-c:s", "mov_text",
             "-metadata:s:s:0", "language=eng",
             tmp_mp4,
         ],
-        check=True,
+        capture_output=True,
+        text=True,
     )
-    os.replace(tmp_mp4, audio_file)
+    if result.returncode != 0:
+        print(f"ERROR: ffmpeg failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    os.replace(tmp_mp4, out_mp4)
 finally:
-    os.unlink(tmp_srt)
     if os.path.exists(tmp_mp4):
         os.unlink(tmp_mp4)
 
-print(f"Saved: {base}.txt and subtitles embedded in {audio_file}")
+print(f"Saved: {base}.txt, {base}.srt, {out_mp4}")
