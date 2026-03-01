@@ -10,8 +10,8 @@ find "$ROOT" -type f -name "*.mp4.zip" | while IFS= read -r zipfile; do
     out_dir="$zip_dir/$stem"
     mkdir -p "$out_dir"
 
-    # skip entirely if the output MP4 already exists with subtitles embedded
-    if ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$out_dir/$stem.mp4" 2>/dev/null | grep -q .; then
+    # skip only if fully done (output MP4 with subtitles exists AND no progress marker)
+    if [ ! -f "$out_dir/$stem.progress" ] && ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$out_dir/$stem.mp4" 2>/dev/null | grep -q .; then
         echo "Skipping (already done): $out_dir/$stem.mp4"
         continue
     fi
